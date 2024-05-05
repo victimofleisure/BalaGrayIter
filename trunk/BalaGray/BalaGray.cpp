@@ -8,6 +8,7 @@
 		revision history:
 		rev		date	comments
         00      26jan23	initial version
+		01		05may24	fix wrongly named member var (cosmetic)
 
 */
 
@@ -115,7 +116,7 @@ protected:
 	int		m_nPruneImbalance;	// prune branch if its imbalance exceeds this threshold
 	CPlaceArray	m_arrBase;	// array of bases, one for each place of numeral
 	CNumeralArray	m_arrNum;	// array of numerals
-	CPlaceArray	nGraySuccessor;	// 2D table of Gray successors for each numeral
+	CPlaceArray	m_arrGraySuccessor;	// 2D table of Gray successors for each numeral
 	CStateArray	m_arrState;	// array of states; crawler stack
 	std::ofstream	m_fOut;	// output file
 	volatile bool	m_bCancel;	// cancel flag
@@ -234,7 +235,7 @@ void CBalaGray::MakeGraySuccessorTable()
 	unsigned long	iFirstBitPos;
 	_BitScanReverse(&iFirstBitPos, nGraySuccessors - 1);
 	int	nStrideShift = 1 << iFirstBitPos;
-	nGraySuccessor.resize(m_arrNum.size() << nStrideShift);
+	m_arrGraySuccessor.resize(m_arrNum.size() << nStrideShift);
 	int	nNums = GetNumeralCount();
 	for (int iNum = 0; iNum < nNums; iNum++) {	// for each numeral
 		int	iCol = 0;
@@ -246,7 +247,7 @@ void CBalaGray::MakeGraySuccessorTable()
 				if (iVal != rowNum.b[iPlace]) {	// if value differs from row value
 					colNum.dw = rowNum.dw;	// column numeral is same as row numeral
 					colNum.b[iPlace] = iVal;	// except one place differs (Gray code)
-					nGraySuccessor[(iNum << nStrideShift) + iCol] = Pack(colNum);
+					m_arrGraySuccessor[(iNum << nStrideShift) + iCol] = Pack(colNum);
 					iCol++;	// next column
 				}
 			}
@@ -283,7 +284,7 @@ void CBalaGray::DumpGraySuccessorTable() const
 		DumpNumeral(m_arrNum[iNum]);
 		printf(": ");
 		for (int iGray = 0; iGray < m_nGraySuccessors; iGray++) {	// for each Gray successor
-			int	iSuccessor = nGraySuccessor[(iNum << m_nGrayStrideShift) + iGray];
+			int	iSuccessor = m_arrGraySuccessor[(iNum << m_nGrayStrideShift) + iGray];
 			DumpNumeral(m_arrNum[iSuccessor]);
 		}
 		printf("\n");
@@ -383,7 +384,7 @@ void CBalaGray::Calc(int nPlaces, const PLACE *arrBase, CWinner& seqWinner)
 #endif
 		int	iPrevNum = m_arrState[iDepth - 1].iNum;
 		int	iGray = m_arrState[iDepth].iGray;
-		int	iNum = nGraySuccessor[(iPrevNum << nGrayStrideShift) + iGray];	// optimized 2D table addressing
+		int	iNum = m_arrGraySuccessor[(iPrevNum << nGrayStrideShift) + iGray];	// optimized 2D table addressing
 		int	iUsedMask = iNum >= ULONGLONG_BITS;	// index selects one of two 64-bit masks
 		uint64_t	nNumeralMask = 1ull << (iNum & (ULONGLONG_BITS - 1));
 		if (!(nNumeralUsedMask[iUsedMask] & nNumeralMask)) {	// if numeral hasn't been used yet on this branch
