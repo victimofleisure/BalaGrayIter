@@ -9,6 +9,7 @@
 		rev		date	comments
         00      26jan23	initial version
 		01		05may24	fix wrongly named member var (cosmetic)
+		02		12dec24	add wrap prediction; improve error handling
 
 */
 
@@ -20,12 +21,13 @@
 #include "vector"	// growable array
 #include "fstream"	// file I/O
 #include "assert.h"	// debugging
-#include "WorkerSync.h"
+#include "WorkerSync.h"	// synchronized worker thread
 
 #define MORE_PLACES 1	// set non-zero to use more than four places
 #define DO_PRUNING 1	// set non-zero to do branch pruning and reduce runtime
 #define START_2_DOWN 1	// set non-zero to skip first two levels of crawl
 #define SHOW_STATS 0	// set non-zero to compute and show crawl statistics
+#define PREDICT_WRAP 1	// set non-zero to predict and abandon branches that won't wrap around Gray
 
 class CBalaGray {
 public:
@@ -85,14 +87,14 @@ public:
 	void	Reset();
 	int		Pack(const NUMERAL& num) const;
 	NUMERAL	Unpack(int iNumeral) const;
-	void	Calc(int nPlaces, const PLACE *arrBase, CWinner& seqWinner);
-	void	CalcFromCode(SET_CODE SetCode, CWinner& seqWinner);
+	bool	Calc(int nPlaces, const PLACE *parrBase, CWinner& seqWinner);
+	bool	CalcFromCode(SET_CODE SetCode, CWinner& seqWinner);
 	void	Cancel() { m_bCancel = true; }
 
 protected:
 // Constants
 	enum {
-		ULONGLONG_BITS = 64,	// number of bits in a long long word
+		ULONGLONG_BITS = sizeof(uint64_t) * 8,	// number of bits in a long long word
 	};
 	enum {	// pruning thresholds may require manual tuning; see notes in set list
 		PRUNE_MAXTRANS = INT_MAX,	// prune branch if maximum transition count exceeds this value
@@ -122,7 +124,7 @@ protected:
 	volatile bool	m_bCancel;	// cancel flag
 
 // Helpers
-	void	MakeNumerals(int nPlaces, const PLACE *arrBase);
+	bool	MakeNumerals(int nPlaces, const PLACE *parrBase);
 	void	MakeGraySuccessorTable();
 	void	DumpGraySuccessorTable() const;
 	void	DumpNumeral(const NUMERAL& num) const;
@@ -141,7 +143,10 @@ CBalaGray::CBalaGray(const char *pszOutPath)
 	if (pszOutPath == NULL)
 		pszOutPath = "BalaGrayIter.txt";
 	m_fOut.open(pszOutPath, std::ios_base::out);	// open output file
-	assert(m_fOut != NULL);
+	assert(m_fOut.good());
+	if (!m_fOut.good()) {
+		printf("can't open output file '%s'\n", pszOutPath);
+	}
 	Reset();
 	m_nPruneMaxTrans = PRUNE_MAXTRANS;
 	m_nPruneImbalance = PRUNE_IMBALANCE;
@@ -187,7 +192,9 @@ int CBalaGray::GetBases(SET_CODE nSetCode, NUMERAL& arrBase)
 	// arrBase[0] = 2; arrBase[1] = 3; arrBase[2] = 4;
 	arrBase.dw = 0;
 	int	nPlaces = 0;
-	while (nSetCode && nPlaces < MAX_PLACES) {
+	while (nSetCode) {	// while set nibbles remain
+		if (nPlaces >= MAX_PLACES)	// if set has too many places
+			return 0;	// return zero to indicate error
 		arrBase.b[nPlaces] = nSetCode & 0xf;	// mask off low-order nibble
 		nPlaces++;	// another base was stored
 		nSetCode >>= 4;	// shift code down to expose next nibble
@@ -201,22 +208,31 @@ int CBalaGray::GetBases(SET_CODE nSetCode, NUMERAL& arrBase)
 	return nPlaces;
 }
 
-void CBalaGray::MakeNumerals(int nPlaces, const PLACE *arrBase)
+bool CBalaGray::MakeNumerals(int nPlaces, const PLACE *parrBase)
 {
+	assert(parrBase != NULL);
 	m_nPlaces = nPlaces;
 	m_arrBase.resize(nPlaces);
 	// compute range of mixed radix numeral from its bases
 	int	nNums = 1;
 	for (int iPlace = 0; iPlace < nPlaces; iPlace++) {	// for each place
-		assert(arrBase[iPlace] > 1);	// radix must be at least binary
-		m_arrBase[iPlace] = arrBase[iPlace];	// store base in member var
-		nNums *= arrBase[iPlace];	// update range
+		if (parrBase[iPlace] < 2) {	// radix must be at least binary
+			printf("radix too small\n");
+			return false;
+		}
+		m_arrBase[iPlace] = parrBase[iPlace];	// store base in member var
+		nNums *= parrBase[iPlace];	// update range
 	}
 	// make array of all numerals representable with the specified bases
+	if (nNums > ULONGLONG_BITS * 2 - 1) {	// limit is maximum shift, which is 127 bits
+		printf("too many numerals\n");
+		return false;
+	}
 	m_arrNum.resize(nNums);
 	for (int iNum = 0; iNum < nNums; iNum++) {	// for each numeral
 		m_arrNum[iNum] = Unpack(iNum);	// convert numeral index into corresponding numeral
 	}
+	return true;
 }
 
 void CBalaGray::MakeGraySuccessorTable()
@@ -345,11 +361,19 @@ __forceinline bool CBalaGray::IsGray(NUMERAL num1, NUMERAL num2) const
 	return bDiff;
 }
 
-void CBalaGray::Calc(int nPlaces, const PLACE *arrBase, CWinner& seqWinner)
+bool CBalaGray::Calc(int nPlaces, const PLACE *parrBase, CWinner& seqWinner)
 {
-	assert(nPlaces >= 0 && nPlaces <= MAX_PLACES);
+	assert(parrBase != NULL);
+	if (nPlaces < 2 || nPlaces > MAX_PLACES) {
+		printf("invalid place count\n");
+		return false;
+	}
+	if (!m_fOut.good()) {	// if output file isn't open
+		return false;	// ctor already reported error
+	}
 	Reset();
-	MakeNumerals(nPlaces, arrBase);
+	if (!MakeNumerals(nPlaces, parrBase))
+		return false;
 	MakeGraySuccessorTable();
 //	DumpNumerals();
 //	DumpGraySuccessorTable();
@@ -367,7 +391,19 @@ void CBalaGray::Calc(int nPlaces, const PLACE *arrBase, CWinner& seqWinner)
 	m_arrState.resize(nNumerals);
 	uint64_t	nPasses = 0;
 	uint64_t	nGrays = 0;
+	uint64_t	nOptimals = 0;
 	uint64_t	nNumeralUsedMask[2] = {0};	// need 128 bits, as number of numerals may exceed 64
+#if PREDICT_WRAP
+	uint64_t	nGrayWrapMask = 0;
+	for (int iOrgSucc = 0; iOrgSucc < m_nGraySuccessors; iOrgSucc++) {	// for each successor of origin
+		int	nShift = m_arrGraySuccessor[iOrgSucc];
+		if (nShift >= ULONGLONG_BITS) {	// if shift too big
+			printf("wrap prediction shift too big\n");
+			return false;
+		}
+		nGrayWrapMask |= 1ull << nShift;	// set successor's corresponding bit in mask
+	}
+#endif
 #if START_2_DOWN
 	int	iDepth = 2;	// first two levels are constant to save time; all sequences start with 0, 1
 	m_arrState[1].iNum = 1;
@@ -387,7 +423,12 @@ void CBalaGray::Calc(int nPlaces, const PLACE *arrBase, CWinner& seqWinner)
 		int	iNum = m_arrGraySuccessor[(iPrevNum << nGrayStrideShift) + iGray];	// optimized 2D table addressing
 		int	iUsedMask = iNum >= ULONGLONG_BITS;	// index selects one of two 64-bit masks
 		uint64_t	nNumeralMask = 1ull << (iNum & (ULONGLONG_BITS - 1));
+#if PREDICT_WRAP
+		if (!(nNumeralUsedMask[iUsedMask] & nNumeralMask)	// if numeral hasn't been used yet on this branch
+		&& (nNumeralUsedMask[0] & nGrayWrapMask) != nGrayWrapMask) {	// and at least one origin successor remains unused
+#else
 		if (!(nNumeralUsedMask[iUsedMask] & nNumeralMask)) {	// if numeral hasn't been used yet on this branch
+#endif
 			m_arrState[iDepth].iNum = iNum;	// save numeral index on stack
 			int	nMaxTrans;
 			NUMERAL	nTransCounts;
@@ -406,10 +447,12 @@ void CBalaGray::Calc(int nPlaces, const PLACE *arrBase, CWinner& seqWinner)
 				m_arrState[iDepth].iNum = 0;	// reset numeral index
 				continue;	// equivalent to recursion, but less overhead
 			} else {	// reached a leaf: complete permutation, a potential winner
+#if !PREDICT_WRAP	// only need to check for Gray wrap if wrap prediction is disabled
 				// if branch doesn't wrap around Gray (first and last numeral differ by more than one place)
 				if (!IsGray(m_arrNum[m_arrState[0].iNum], m_arrNum[m_arrState[nNumerals - 1].iNum])) {
 					goto lblPrune;	// abandon this branch
 				}
+#endif
 #if SHOW_STATS
 				nGrays++;	// count another Gray permutation
 #endif
@@ -421,6 +464,10 @@ void CBalaGray::Calc(int nPlaces, const PLACE *arrBase, CWinner& seqWinner)
 				// if max transition count and imbalance equal our current bests
 				if (nMaxTrans == nBestMaxTrans && nImbalance == nBestImbalance) {
 					if (nMaxSpan >= nBestMaxSpan) {	// if max span didn't improve
+#if SHOW_STATS
+						if (nMaxSpan == nBestMaxSpan)
+							nOptimals++;
+#endif
 						goto lblPrune;	// abandon this branch
 					}
 				}
@@ -434,6 +481,9 @@ void CBalaGray::Calc(int nPlaces, const PLACE *arrBase, CWinner& seqWinner)
 				for (int iNum = 0; iNum < nNumerals; iNum++) {	// for each numeral
 					m_arrBestPerm[iNum] = m_arrState[iNum].iNum;	// update best permutation's numeral indices
 				}
+#if SHOW_STATS
+				nOptimals = 1;	// first instance of new optimality
+#endif
 			}
 		}
 		m_arrState[iDepth].iGray++;	// increment Gray transitions index
@@ -456,13 +506,13 @@ lblPrune:
 		}
 	}
 #if SHOW_STATS
-	printf("nPasses = %lld nGrays = %lld\n", nPasses, nGrays);
+	printf("nPasses = %lld nGrays = %lld nOptimals = %lld\n", nPasses, nGrays, nOptimals);
 #endif
 	// pass winning sequence back to caller
 	seqWinner.m_nPlaces = nPlaces;
 	seqWinner.m_nBaseSum = 0;
 	for (int iPlace = 0; iPlace < nPlaces; iPlace++) {
-		seqWinner.m_nBaseSum += arrBase[iPlace];
+		seqWinner.m_nBaseSum += parrBase[iPlace];
 	}
 	seqWinner.m_nImbalance = nBestImbalance;
 	seqWinner.m_nMaxTrans = nBestMaxTrans;
@@ -472,6 +522,7 @@ lblPrune:
 	for (int iNum = 0; iNum < nNumerals; iNum++) {
 		seqWinner.m_arrNum[iNum].dw = m_arrNum[m_arrBestPerm[iNum]].dw;
 	}
+	return true;
 }
 
 __forceinline int CBalaGray::ComputeBalance(int iDepth, int& nMaxTrans, NUMERAL& nTransCounts) const
@@ -551,12 +602,12 @@ __forceinline int CBalaGray::ComputeMaxSpan(int iDepth) const
 	return nMaxSpan;
 }
 
-void CBalaGray::CalcFromCode(SET_CODE nSetCode, CWinner& seqWinner)
+bool CBalaGray::CalcFromCode(SET_CODE nSetCode, CWinner& seqWinner)
 {
 	seqWinner.m_nSetCode = nSetCode;
 	NUMERAL	arrBase;
 	int	nPlaces = GetBases(nSetCode, arrBase);
-	Calc(nPlaces, arrBase.b, seqWinner);
+	return Calc(nPlaces, arrBase.b, seqWinner);
 }
 
 void TestCalc()
@@ -721,12 +772,14 @@ std::ifstream& operator>>(std::ifstream& ifs, CBalaGray::CWinnerArray& arrWin)
 void CBalaGray::CWinnerArray::Read(const char *pszPath)
 {
 	std::ifstream	fIn(pszPath, std::ios_base::binary);
+	assert(fIn.good());
 	fIn >> *this;
 }
 
 void CBalaGray::CWinnerArray::Write(const char *pszPath) const
 {
 	std::ofstream	fOut(pszPath, std::ios_base::trunc | std::ios_base::binary);
+	assert(fOut.good());
 	fOut << *this;
 }
 
@@ -789,7 +842,12 @@ CBalaGray::SET_CODE arrSetCode[] = {
 void MakeHTMLTable(const CBalaGray::CWinnerArray& arrSeq, const char *pszPath)
 {
 	static const char	arrBoolChar[2] = {'N', 'Y'};
+	assert(pszPath != NULL);
 	std::ofstream	fOut(pszPath, std::ios_base::trunc);
+	if (!fOut.good()) {
+		printf("can't create file '%s'\n", pszPath);
+		return;
+	}
 	int	nSeqs = static_cast<int>(arrSeq.size());
 	fOut << "<!DOCTYPE html>\n<html>\n<head>\n";
 	fOut << "<title>Balanced Gray Interval Sets</title>\n";
@@ -825,7 +883,12 @@ void MakeHTMLTable(const CBalaGray::CWinnerArray& arrSeq, const char *pszPath)
 
 void MakeCSVTable(const CBalaGray::CWinnerArray& arrSeq, const char *pszPath)
 {
+	assert(pszPath != NULL);
 	std::ofstream	fOut(pszPath, std::ios_base::trunc);
+	if (!fOut.good()) {
+		printf("can't create file '%s'\n", pszPath);
+		return;
+	}
 	int	nSeqs = static_cast<int>(arrSeq.size());
 	fOut << "Name,Digit,Digits,Range,States,Imbalance,MaxSpan,Proven\n";
 	for (int iSeq = 0; iSeq < nSeqs; iSeq++) {
@@ -850,7 +913,12 @@ void MakeCSVTable(const CBalaGray::CWinnerArray& arrSeq, const char *pszPath)
 
 void MakePolymeterImportTracksCSV(const CBalaGray::CWinnerArray& arrSeq, const char *pszPath)
 {
+	assert(pszPath != NULL);
 	std::ofstream	fOut(pszPath, std::ios_base::trunc);
+	if (!fOut.good()) {
+		printf("can't create file '%s'\n", pszPath);
+		return;
+	}
 	int	nSeqs = static_cast<int>(arrSeq.size());
 	fOut << "Name,Type,Steps\n";
 	for (int iSeq = 0; iSeq < nSeqs; iSeq++) {
