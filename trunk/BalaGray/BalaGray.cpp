@@ -10,6 +10,7 @@
         00      26jan23	initial version
 		01		05may24	fix wrongly named member var (cosmetic)
 		02		12dec24	add wrap prediction; improve error handling
+		03		04aug25	add standard deviation
 
 */
 
@@ -22,12 +23,15 @@
 #include "fstream"	// file I/O
 #include "assert.h"	// debugging
 #include "WorkerSync.h"	// synchronized worker thread
+#include <iomanip>
 
 #define MORE_PLACES 1	// set non-zero to use more than four places
 #define DO_PRUNING 1	// set non-zero to do branch pruning and reduce runtime
 #define START_2_DOWN 1	// set non-zero to skip first two levels of crawl
 #define SHOW_STATS 0	// set non-zero to compute and show crawl statistics
 #define PREDICT_WRAP 1	// set non-zero to predict and abandon branches that won't wrap around Gray
+#define OPT_STD_DEV 1	// set non-zero to optimize standard deviation: 1 == standard deviation is
+						// max span tie-breaker; 2 == standard deviation only, ignoring max span
 
 class CBalaGray {
 public:
@@ -64,6 +68,9 @@ public:
 		int		m_nImbalance;	// difference between minimum and maximum transition counts
 		int		m_nMaxTrans;	// maximum transition count
 		int		m_nMaxSpan;		// maximum span length
+#if OPT_STD_DEV
+		double	m_fStdDev;		// standard deviation of span lengths compared to ideal mean
+#endif
 		bool	m_bIsProven;	// true if all permutations were tried
 		CNumeralArray	m_arrNum;	// array of mixed-radix numerals
 		friend std::ofstream& operator<<(std::ofstream& ofs, const CWinner& winner);
@@ -132,10 +139,13 @@ protected:
 	void	DumpSet() const;
 	void	DumpPermutation() const;
 	void	WriteBalanceToLog(int nImbalance, int nMaxTrans, int nMaxSpan);
+	void	WriteBalanceToLog(int nImbalance, int nMaxTrans, int nMaxSpan, double fStdDev);
 	void	WritePermutationToLog();
 	bool	IsGray(NUMERAL num1, NUMERAL num2) const;
 	int		ComputeBalance(int iDepth, int& nMaxTrans, NUMERAL& nTransCounts) const;
 	int		ComputeMaxSpan(int iDepth) const;
+	double	ComputeStdDev() const;
+	int		CalcDeviance(int nSamp) const;
 };
 
 CBalaGray::CBalaGray(const char *pszOutPath)
@@ -332,6 +342,11 @@ void CBalaGray::WriteBalanceToLog(int nImbalance, int nMaxTrans, int nMaxSpan)
 	m_fOut << "balance = " << nImbalance << ", maxtrans = " << nMaxTrans << ", maxspan = " << nMaxSpan << '\n';
 }
 
+void CBalaGray::WriteBalanceToLog(int nImbalance, int nMaxTrans, int nMaxSpan, double fStdDev)
+{
+	m_fOut << "balance = " << nImbalance << ", maxtrans = " << nMaxTrans << ", maxspan = " << nMaxSpan << ", stddev = " << fStdDev << '\n';
+}
+
 void CBalaGray::WritePermutationToLog()
 {
 	int	nPerms = GetNumeralCount();
@@ -386,6 +401,7 @@ bool CBalaGray::Calc(int nPlaces, const PLACE *parrBase, CWinner& seqWinner)
 	int	nBestImbalance = INT_MAX;
 	int	nBestMaxTrans = INT_MAX;
 	int	nBestMaxSpan = INT_MAX;
+	double	fBestStdDev = DBL_MAX;
 	CPlaceArray	m_arrBestPerm;
 	m_arrBestPerm.resize(nNumerals);
 	m_arrState.resize(nNumerals);
@@ -461,6 +477,35 @@ bool CBalaGray::Calc(int nPlaces, const PLACE *parrBase, CWinner& seqWinner)
 					goto lblPrune;	// abandon this branch
 				}
 				int	nMaxSpan = ComputeMaxSpan(iDepth);	// compute maximum span length
+#if OPT_STD_DEV == 1	// if standard deviation is max span tie-breaker
+				// if max transition count and imbalance equal our current bests
+				if (nMaxTrans == nBestMaxTrans && nImbalance == nBestImbalance) {
+					if (nMaxSpan > nBestMaxSpan) {	// if max span worsened
+						goto lblPrune;	// abandon this branch
+					}
+				}
+				double fStdDev = ComputeStdDev();	// compute standard deviation
+				if (nMaxTrans == nBestMaxTrans && nImbalance == nBestImbalance && nMaxSpan == nBestMaxSpan) {
+					if (fStdDev >= fBestStdDev) {	// if standard deviation didn't improve
+#if SHOW_STATS
+						if (nMaxSpan == nBestMaxSpan)
+							nOptimals++;
+#endif
+						goto lblPrune;	// abandon this branch
+					}
+				}
+#elif OPT_STD_DEV == 2	// else if standard deviation only, ignoring max span
+				double fStdDev = ComputeStdDev();	// compute standard deviation
+				if (nMaxTrans == nBestMaxTrans && nImbalance == nBestImbalance) {
+					if (fStdDev >= fBestStdDev) {	// if standard deviation didn't improve
+#if SHOW_STATS
+						if (nMaxSpan == nBestMaxSpan)
+							nOptimals++;
+#endif
+						goto lblPrune;	// abandon this branch
+					}
+				}
+#else	// else not optimizing standard deviation; max span only
 				// if max transition count and imbalance equal our current bests
 				if (nMaxTrans == nBestMaxTrans && nImbalance == nBestImbalance) {
 					if (nMaxSpan >= nBestMaxSpan) {	// if max span didn't improve
@@ -471,12 +516,19 @@ bool CBalaGray::Calc(int nPlaces, const PLACE *parrBase, CWinner& seqWinner)
 						goto lblPrune;	// abandon this branch
 					}
 				}
+#endif // OPT_STD_DEV
 				// we have a winner, until a better permutation comes along
 				nBestMaxTrans = nMaxTrans;	// update best max transition count
 				nBestImbalance = nImbalance;	// update best imbalance
 				nBestMaxSpan = nMaxSpan;	// update best maximum span length
+#if OPT_STD_DEV
+				fBestStdDev = fStdDev;
+				printf("balance = %d, maxtrans = %d, maxspan = %d, stddev = %f\n", nImbalance, nMaxTrans, nMaxSpan, fStdDev);
+				WriteBalanceToLog(nImbalance, nMaxTrans, nMaxSpan, fStdDev);
+#else
 				printf("balance = %d, maxtrans = %d, maxspan = %d\n", nImbalance, nMaxTrans, nMaxSpan);
 				WriteBalanceToLog(nImbalance, nMaxTrans, nMaxSpan);
+#endif // OPT_STD_DEV
 				WritePermutationToLog();
 				for (int iNum = 0; iNum < nNumerals; iNum++) {	// for each numeral
 					m_arrBestPerm[iNum] = m_arrState[iNum].iNum;	// update best permutation's numeral indices
@@ -517,6 +569,9 @@ lblPrune:
 	seqWinner.m_nImbalance = nBestImbalance;
 	seqWinner.m_nMaxTrans = nBestMaxTrans;
 	seqWinner.m_nMaxSpan = nBestMaxSpan;
+#if OPT_STD_DEV
+	seqWinner.m_fStdDev = fBestStdDev;
+#endif
 	seqWinner.m_bIsProven = !m_bCancel;
 	seqWinner.m_arrNum.resize(nNumerals);
 	for (int iNum = 0; iNum < nNumerals; iNum++) {
@@ -600,6 +655,56 @@ __forceinline int CBalaGray::ComputeMaxSpan(int iDepth) const
 		}
 	}
 	return nMaxSpan;
+}
+
+__forceinline int CBalaGray::CalcDeviance(int nSamp) const
+{
+	int	nDev = nSamp - m_nPlaces;	// deviation from mean
+	return nDev * nDev;	// squared
+}
+
+double CBalaGray::ComputeStdDev() const
+{
+	int	arrSpan[MAX_PLACES];
+	int	arrFirstSpan[MAX_PLACES];
+	for (int iPlace = 0; iPlace < m_nPlaces; iPlace++) {	// for each place
+		arrSpan[iPlace] = 1;	// initial span length is one
+		arrFirstSpan[iPlace] = 0;	// first span length not set
+	}
+	NUMERAL	sFirst, sPrev;
+	sFirst.dw = m_arrNum[m_arrState[0].iNum].dw;	// store first state
+	sPrev.dw = sFirst.dw;
+	double	fDevSum = 0;
+	int nPerms = int(m_arrState.size());
+	for (int iPerm = 1; iPerm < nPerms; iPerm++) {	// for each permutation, excluding first
+		NUMERAL	s;
+		s.dw = m_arrNum[m_arrState[iPerm].iNum].dw;	// compare this state to previous state
+		for (int iPlace = 0; iPlace < m_nPlaces; iPlace++) {	// for each place
+			if (s.b[iPlace] != sPrev.b[iPlace]) {	// if place transitioned
+				if (!arrFirstSpan[iPlace]) {	// if first span length hasn't been set
+					arrFirstSpan[iPlace] = arrSpan[iPlace];	// save first span length
+				} else {
+					fDevSum += CalcDeviance(arrSpan[iPlace]);
+				}
+				arrSpan[iPlace] = 1;	// reset span length
+			} else {	// place didn't transition
+				arrSpan[iPlace]++;	// increment span length
+			}
+		}
+		sPrev = s;	// update previous state
+	}
+	// wrap around from last to first state
+	for (int iPlace = 0; iPlace < m_nPlaces; iPlace++) {	// for each place
+		if (sFirst.b[iPlace] != sPrev.b[iPlace]) {	// if place transitioned
+			fDevSum += CalcDeviance(arrSpan[iPlace]);
+		} else {	// place didn't transition
+			arrFirstSpan[iPlace] += arrSpan[iPlace];	// compute wrapped span length
+		}
+		fDevSum += CalcDeviance(arrFirstSpan[iPlace]);
+	}
+	double	fVar = fDevSum / nPerms;
+	double	fStdDev = sqrt(fVar);
+	return fStdDev;
 }
 
 bool CBalaGray::CalcFromCode(SET_CODE nSetCode, CWinner& seqWinner)
@@ -704,6 +809,9 @@ CBalaGray::CWinner::CWinner()
 	m_nImbalance = 0;
 	m_nMaxTrans = 0;
 	m_nMaxSpan = 0;
+#if OPT_STD_DEV
+	m_fStdDev = 0;
+#endif
 	m_bIsProven = false;
 }
 
@@ -715,6 +823,9 @@ std::ofstream& operator<<(std::ofstream& ofs, const CBalaGray::CWinner& winner)
 	ofs << ' ' << winner.m_nImbalance;
 	ofs << ' ' << winner.m_nMaxTrans;
 	ofs << ' ' << winner.m_nMaxSpan;
+#if OPT_STD_DEV
+	ofs << ' ' << winner.m_fStdDev;
+#endif
 	ofs << ' ' << winner.m_bIsProven;
 	int	nNums = static_cast<int>(winner.m_arrNum.size());
 	ofs << ' ' << nNums << std::hex;
@@ -732,6 +843,9 @@ std::ifstream& operator>>(std::ifstream& ifs, CBalaGray::CWinner& winner)
 	ifs >> winner.m_nImbalance;
 	ifs >> winner.m_nMaxTrans;
 	ifs >> winner.m_nMaxSpan;
+#if OPT_STD_DEV
+	ifs >> winner.m_fStdDev;
+#endif
 	ifs >> winner.m_bIsProven;
 	int	nNums;
 	ifs >> nNums >> std::hex;
@@ -807,10 +921,12 @@ void CalcWithTimeout(CBalaGray::SET_CODE nSetCode)
 	case 0x37:
 	case 0x46:
 	case 0x234:
-	case 0x2225:
 	case 0x22222:
 		// the above sets benefit from longer runtimes
 		nTimeoutMillis = std::max(nTimeoutMillis, 120 * 1000);
+		break;
+	case 0x2225:
+		nTimeoutMillis = std::max(nTimeoutMillis, 180 * 1000);
 		break;
 	case 0x336:
 	case 0x2334:
@@ -822,6 +938,9 @@ void CalcWithTimeout(CBalaGray::SET_CODE nSetCode)
 		bg.SetPruneImbalance(2);
 		break;
 	}
+#if OPT_STD_DEV
+	nTimeoutMillis *= 2;	// standard deviation needs longer timeout
+#endif
 	CWorkerSync	sync;
 	std::thread thrWorker(ThreadFunc, &bg, nSetCode, &sync);
 	bool	bIsDone = sync.WaitForDone(nTimeoutMillis);
@@ -856,7 +975,11 @@ void MakeHTMLTable(const CBalaGray::CWinnerArray& arrSeq, const char *pszPath)
 		"<link href=\"../style.css\" rel=stylesheet title=default type=text/css>\n"
 		"</head>\n<body style=\"text-size-adjust: none; -webkit-text-size-adjust: none;\">\n"	// need this for mobile, else text size varies
 		"<table border=1 cellpadding=2 cellspacing=0>\n"
+#if OPT_STD_DEV
+		"<tr><th>Name</th><th>Size</th><th>Range</th><th>States</th><th>Imbalance</th><th>MaxSpan</th><th>StdDev</th><th>Proven</th><th>Set</th></tr>\n";
+#else
 		"<tr><th>Name</th><th>Size</th><th>Range</th><th>States</th><th>Imbalance</th><th>MaxSpan</th><th>Proven</th><th>Set</th></tr>\n";
+#endif
 	for (int iSeq = 0; iSeq < nSeqs; iSeq++) {
 		const CBalaGray::CWinner&	seq = arrSeq[iSeq];
 		int	nNumerals = static_cast<int>(seq.m_arrNum.size());
@@ -866,6 +989,9 @@ void MakeHTMLTable(const CBalaGray::CWinnerArray& arrSeq, const char *pszPath)
 			<< "</td><td>" << nNumerals
 			<< "</td><td>" << seq.m_nImbalance
 			<< "</td><td>" << seq.m_nMaxSpan
+#if OPT_STD_DEV
+			<< "</td><td>" << std::setprecision(3) << seq.m_fStdDev
+#endif
 			<< "</td><td>" << arrBoolChar[seq.m_bIsProven] << "</td><td>\n";
 		for (int iPlace = 0; iPlace < seq.m_nPlaces; iPlace++) {
 			if (iPlace)
@@ -890,7 +1016,11 @@ void MakeCSVTable(const CBalaGray::CWinnerArray& arrSeq, const char *pszPath)
 		return;
 	}
 	int	nSeqs = static_cast<int>(arrSeq.size());
+#if OPT_STD_DEV
+	fOut << "Name,Digit,Digits,Range,States,Imbalance,MaxSpan,StdDev,Proven\n";
+#else
 	fOut << "Name,Digit,Digits,Range,States,Imbalance,MaxSpan,Proven\n";
+#endif
 	for (int iSeq = 0; iSeq < nSeqs; iSeq++) {
 		const CBalaGray::CWinner&	seq = arrSeq[iSeq];
 		int	nNumerals = static_cast<int>(seq.m_arrNum.size());
@@ -902,6 +1032,9 @@ void MakeCSVTable(const CBalaGray::CWinnerArray& arrSeq, const char *pszPath)
 				<< ',' << nNumerals
 				<< ',' << seq.m_nImbalance
 				<< ',' << seq.m_nMaxSpan
+#if OPT_STD_DEV
+				<< ',' << seq.m_fStdDev
+#endif
 				<< ',' << seq.m_bIsProven;
 			for (int iNum = 0; iNum < nNumerals; iNum++) {
 				fOut << ',' << int(seq.m_arrNum[iNum].b[iPlace]);
