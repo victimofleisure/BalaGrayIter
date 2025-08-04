@@ -15,7 +15,7 @@ The source code is standard C++ and should compile cleanly in any modern environ
 
 ## Citation
 
-This software is connected to a [research paper](https://zenodo.org/records/16041344). If you use BalaGray in your research, please cite:
+This software is connected to a [research paper](https://doi.org/10.5281/zenodo.16369463). If you use BalaGray in your research, please cite:
 
 Korda, C. (2025). *Granular 12-Tone Harmony via Mixed-Radix Balanced Gray Codes:  
-Interval Set Partitions and the BalaGray Solver*. [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.16041257.svg)](https://doi.org/10.5281/zenodo.16041257)
+Interval Set Partitions and the BalaGray Solver*. [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.16369463.svg)](https://doi.org/10.5281/zenodo.16369463)
