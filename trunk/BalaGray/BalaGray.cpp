@@ -925,6 +925,9 @@ void CalcWithTimeout(CBalaGray::SET_CODE nSetCode)
 		// the above sets benefit from longer runtimes
 		nTimeoutMillis = std::max(nTimeoutMillis, 120 * 1000);
 		break;
+	case 0x2224:
+		nTimeoutMillis = std::max(nTimeoutMillis, 60 * 1000);
+		break;
 	case 0x2225:
 		nTimeoutMillis = std::max(nTimeoutMillis, 180 * 1000);
 		break;
