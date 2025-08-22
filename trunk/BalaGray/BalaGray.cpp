@@ -157,6 +157,7 @@ CBalaGray::CBalaGray(const char *pszOutPath)
 	if (pszOutPath == NULL)
 		pszOutPath = "BalaGrayIter.txt";
 	m_fOut.open(pszOutPath, std::ios_base::out);	// open output file
+	m_fOut << std::unitbuf; // enable automatic flushing
 	assert(m_fOut.good());
 	if (!m_fOut.good()) {
 		printf("can't open output file '%s'\n", pszOutPath);
@@ -1108,7 +1109,7 @@ void CalcAllSets()
 int main(int argc, const char* argv[])
 {
 //	TestCalc();
-	CalcWithTimeout(0x333);
-//	CalcAllSets();
+//	CalcWithTimeout(0x444);
+	CalcAllSets();
 	return 0;
 }
