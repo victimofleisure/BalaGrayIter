@@ -105,7 +105,7 @@ public:
 protected:
 // Constants
 	enum {
-		ULONGLONG_BITS = sizeof(uint64_t) * 8,	// number of bits in a long long word
+		ULONGLONG_BITS = sizeof(uint64_t) * CHAR_BIT,	// number of bits in a long long word
 	};
 	enum {	// pruning thresholds may require manual tuning; see notes in set list
 		PRUNE_MAXTRANS = INT_MAX,	// prune branch if maximum transition count exceeds this value
@@ -251,7 +251,7 @@ bool CBalaGray::MakeNumerals(int nPlaces, const PLACE *parrBase)
 
 inline uint32_t BitScanReverse(uint32_t nMask)
 {
-	const int	nBits = sizeof(uint32_t) * 8;
+	const int	nBits = sizeof(uint32_t) * CHAR_BIT;
 	uint32_t nBitMask = 1u << (nBits - 1);
 	for (int iBit = nBits - 1; iBit >= 0; iBit--) {
 		if (nMask & nBitMask)
