@@ -11,6 +11,7 @@
 		01		05may24	fix wrongly named member var (cosmetic)
 		02		12dec24	add wrap prediction; improve error handling
 		03		04aug25	add standard deviation
+		04		22aug25	improve portability
 
 */
 
@@ -18,12 +19,15 @@
 // This app computes balanced Gray code sequences, for use in music theory.
 
 #include "stdafx.h"	// precompiled header
-#include "stdint.h"	// standard sizes
-#include "vector"	// growable array
-#include "fstream"	// file I/O
-#include "assert.h"	// debugging
+#include <stdint.h>	// standard sizes
+#include <vector>	// growable array
+#include <fstream>	// file I/O
+#include <assert.h>	// debugging
 #include "WorkerSync.h"	// synchronized worker thread
 #include <iomanip>
+#include <climits>
+#include <cfloat>
+#include <math.h>
 
 #define MORE_PLACES 1	// set non-zero to use more than four places
 #define DO_PRUNING 1	// set non-zero to do branch pruning and reduce runtime
@@ -186,7 +190,7 @@ CBalaGray::NUMERAL CBalaGray::Unpack(int iNumeral) const
 	num.dw = 0;
 	for (int iPlace = 0; iPlace < m_nPlaces; iPlace++) {	// for each place
 		int	nBase = m_arrBase[iPlace];
-		num.b[iPlace] = iNumeral % nBase;
+		num.b[iPlace] = static_cast<PLACE>(iNumeral % nBase);
 		iNumeral /= nBase;
 	}
 	return num;	// return numeral
@@ -245,6 +249,18 @@ bool CBalaGray::MakeNumerals(int nPlaces, const PLACE *parrBase)
 	return true;
 }
 
+inline uint32_t BitScanReverse(uint32_t nMask)
+{
+	const int	nBits = sizeof(uint32_t) * 8;
+	uint32_t nBitMask = 1u << (nBits - 1);
+	for (int iBit = nBits - 1; iBit >= 0; iBit--) {
+		if (nMask & nBitMask)
+			return iBit;
+		nBitMask >>= 1;
+	}
+	return 0;
+}
+
 void CBalaGray::MakeGraySuccessorTable()
 {
 	// Build 2D table of possible Gray successors from each numeral.
@@ -258,8 +274,7 @@ void CBalaGray::MakeGraySuccessorTable()
 	}
 	// Compute stride of Gray successors table; to avoid multiplication,
 	// round up stride to nearest power of two and convert it to a shift.
-	unsigned long	iFirstBitPos;
-	_BitScanReverse(&iFirstBitPos, nGraySuccessors - 1);
+	uint32_t	iFirstBitPos = BitScanReverse(nGraySuccessors - 1);
 	int	nStrideShift = 1 << iFirstBitPos;
 	m_arrGraySuccessor.resize(m_arrNum.size() << nStrideShift);
 	int	nNums = GetNumeralCount();
@@ -272,8 +287,8 @@ void CBalaGray::MakeGraySuccessorTable()
 			for (int iVal = 0; iVal < nVals; iVal++) {	// for each of place's values
 				if (iVal != rowNum.b[iPlace]) {	// if value differs from row value
 					colNum.dw = rowNum.dw;	// column numeral is same as row numeral
-					colNum.b[iPlace] = iVal;	// except one place differs (Gray code)
-					m_arrGraySuccessor[(iNum << nStrideShift) + iCol] = Pack(colNum);
+					colNum.b[iPlace] = static_cast<PLACE>(iVal);	// except one place differs (Gray code)
+					m_arrGraySuccessor[(iNum << nStrideShift) + iCol] = static_cast<PLACE>(Pack(colNum));
 					iCol++;	// next column
 				}
 			}
@@ -359,7 +374,7 @@ void CBalaGray::WritePermutationToLog()
 	m_fOut << '\n';
 }
 
-__forceinline bool CBalaGray::IsGray(NUMERAL num1, NUMERAL num2) const
+FORCE_INLINE bool CBalaGray::IsGray(NUMERAL num1, NUMERAL num2) const
 {
 	// Returns true if the given numerals differ by exactly one place.
 	bool	bDiff = false;
@@ -445,7 +460,7 @@ bool CBalaGray::Calc(int nPlaces, const PLACE *parrBase, CWinner& seqWinner)
 #else
 		if (!(nNumeralUsedMask[iUsedMask] & nNumeralMask)) {	// if numeral hasn't been used yet on this branch
 #endif
-			m_arrState[iDepth].iNum = iNum;	// save numeral index on stack
+			m_arrState[iDepth].iNum = static_cast<PLACE>(iNum);	// save numeral index on stack
 			int	nMaxTrans;
 			NUMERAL	nTransCounts;
 			int	nImbalance = ComputeBalance(iDepth, nMaxTrans, nTransCounts);
@@ -580,7 +595,7 @@ lblPrune:
 	return true;
 }
 
-__forceinline int CBalaGray::ComputeBalance(int iDepth, int& nMaxTrans, NUMERAL& nTransCounts) const
+FORCE_INLINE int CBalaGray::ComputeBalance(int iDepth, int& nMaxTrans, NUMERAL& nTransCounts) const
 {
 	int	nPlaces = m_nPlaces;
 	NUMERAL	nTrans;
@@ -615,7 +630,7 @@ __forceinline int CBalaGray::ComputeBalance(int iDepth, int& nMaxTrans, NUMERAL&
 	return nMax - nMin;	// return difference
 }
 
-__forceinline int CBalaGray::ComputeMaxSpan(int iDepth) const
+FORCE_INLINE int CBalaGray::ComputeMaxSpan(int iDepth) const
 {
 	int	arrSpan[MAX_PLACES];
 	int	arrFirstSpan[MAX_PLACES];
@@ -657,7 +672,7 @@ __forceinline int CBalaGray::ComputeMaxSpan(int iDepth) const
 	return nMaxSpan;
 }
 
-__forceinline int CBalaGray::CalcDeviance(int nSamp) const
+FORCE_INLINE int CBalaGray::CalcDeviance(int nSamp) const
 {
 	int	nDev = nSamp - m_nPlaces;	// deviation from mean
 	return nDev * nDev;	// squared
@@ -1093,7 +1108,7 @@ void CalcAllSets()
 int main(int argc, const char* argv[])
 {
 //	TestCalc();
-//	CalcWithTimeout(0x3333);
-	CalcAllSets();
+	CalcWithTimeout(0x333);
+//	CalcAllSets();
 	return 0;
 }
