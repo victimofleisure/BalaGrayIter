@@ -93,6 +93,7 @@ public:
 	void	SetPruneMaxTrans(int nThreshold) { m_nPruneMaxTrans = nThreshold; }
 	void	SetPruneImbalance(int nThreshold) { m_nPruneImbalance = nThreshold; }
 	static	int		GetBases(SET_CODE nSetCode, NUMERAL& arrBase);
+	bool	IsCanceled() const { return m_bCancel; }
 
 // Operations
 	void	Reset();
